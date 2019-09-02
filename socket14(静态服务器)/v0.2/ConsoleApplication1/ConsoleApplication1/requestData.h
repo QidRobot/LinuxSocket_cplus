@@ -122,4 +122,21 @@ struct timerCmp
 {
 	bool operator()(const mytimer *a, const mytimer *b) const;
 };
+
+/*RAII的做法是使用一个对象，在其构造时获取对应的资源，在对象生命期内控制对资源的访问，
+使之始终保持有效，最后在对象析构的时候，释放构造时获取的资源。*/
+class MutexLockGuard//管理资源
+{
+public:
+	//避免在对象初始化时隐式调用该构造函数 只能通过显示调用 及不支持隐式类型转换
+	explicit MutexLockGuard();
+	~MutexLockGuard();
+
+private:
+	static pthread_mutex_t lock;
+
+private:
+	MutexLockGuard(const MutexLockGuard&);
+	MutexLockGuard& operator=(const MutexLockGuard&);
+};
 #endif

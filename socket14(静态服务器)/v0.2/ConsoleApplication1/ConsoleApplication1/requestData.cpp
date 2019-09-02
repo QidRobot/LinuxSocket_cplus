@@ -18,14 +18,15 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/opencv.hpp>
 
-
 using namespace cv;
 
 //test
 #include <iostream>
 using namespace std;
 //初始化锁PTHREAD_MUTEX_INITIALIZER则是一个结构常量。
-pthread_mutex_t qlock = PTHREAD_MUTEX_INITIALIZER;
+//pthread_mutex_t qlock = PTHREAD_MUTEX_INITIALIZER; - 使用了RALL锁机制
+/*初始化RALL锁机制中的锁*/
+pthread_mutex_t MutexLockGuard::lock = PTHREAD_MUTEX_INITIALIZER;
 //全局锁可以直接利用宏定义初始化 而动态锁需要利用锁初始化函数对锁进行初始化
 pthread_mutex_t MimeType::lock = PTHREAD_MUTEX_INITIALIZER;
 //设定全局变量
@@ -286,11 +287,17 @@ void requestData::handleRequest()
 	// 一定要先加时间信息，否则可能会出现刚加进去，下个in触发来了，然后分离失败后，
 	// 又加入队列，最后超时被删，然后正在线程中进行的任务出错，double free错误。
 	// 新增时间信息
-	pthread_mutex_lock(&qlock);
+	//pthread_mutex_lock(&qlock);
 	mytimer *mtimer = new mytimer(this, 500);
 	timer = mtimer;
-	myTimerQueue.push(mtimer);
-	pthread_mutex_unlock(&qlock);
+	{
+		//LockGuard作用于该代码块 方便了代码的书写 且该锁实现的是RALL机制 能起到管理资源的作用 调用构造函数即初始化 资源 
+		//该类的析构函数 调用时即释放资源
+		MutexLockGuard();
+		myTimerQueue.push(mtimer);
+	}
+	//myTimerQueue.push(mtimer);
+	//pthread_mutex_unlock(&qlock);
 
 	__uint32_t _epo_event = EPOLLIN | EPOLLET | EPOLLONESHOT;
 	int ret = epoll_mod(epollfd, fd, static_cast<void*>(this), _epo_event);
@@ -918,4 +925,12 @@ size_t mytimer::getExpTime() const
 bool timerCmp::operator()(const mytimer *a, const mytimer *b) const
 {
 	return a->getExpTime() > b->getExpTime();
+}
+MutexLockGuard::MutexLockGuard()
+{
+	pthread_mutex_lock(&lock);
+}
+MutexLockGuard::~MutexLockGuard()
+{
+	pthread_mutex_unlock(&lock);
 }

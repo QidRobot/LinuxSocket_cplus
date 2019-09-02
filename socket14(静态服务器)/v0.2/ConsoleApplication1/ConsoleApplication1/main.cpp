@@ -15,7 +15,9 @@
 #include <iostream>
 #include <vector>
 #include <unistd.h>
+
 using namespace std;
+
 //线程池中线程数量设置为4
 const int THREADPOOL_THREAD_NUM = 4;
 //线程池中的任务队列大小
@@ -28,10 +30,13 @@ const int ASK_IMAGE_STITCH = 2;
 //通过输入路径改变进程的执行路径 从而达到访问指定文件的作用
 const char *PATH = "/home/jacob/dir";
 //const string PATH = "/home/jacob/dir";
+//const string PATH = "/";
 
 const int TIMER_TIME_OUT = 500;
+
 //extern一般是使用在多文件之间需要共享某些代码时。
-extern pthread_mutex_t qlock;
+//extern pthread_mutex_t qlock; 因为使用了RALL锁机制 因此不用再单独创建锁
+
 extern struct epoll_event* events;
 void acceptConnection(int listen_fd, int epoll_fd, const string &path);
 
@@ -118,11 +123,15 @@ void acceptConnection(int listen_fd, int epoll_fd, const string &path)
 		//新增时间信息
 		mytimer *mtimer = new mytimer(req_info, TIMER_TIME_OUT);
 		req_info->addTimer(mtimer);
-		pthread_mutex_lock(&qlock);
+		//pthread_mutex_lock(&qlock);
+		{
+			MutexLockGuard();
+		}
 		myTimerQueue.push(mtimer);
-		pthread_mutex_unlock(&qlock);
+		//pthread_mutex_unlock(&qlock);
 	}
 }
+//分发处理函数
 void handle_events(int epoll_fd, int listen_fd, struct epoll_event* events, int events_num, const string &path, threadpool_t* tp)
 {
 	for (int i = 0; i < events_num; i ++)
@@ -167,7 +176,8 @@ void handle_events(int epoll_fd, int listen_fd, struct epoll_event* events, int 
 //处理过期事件 由于定时器优先级队列中为小顶堆，我们只需要判断最顶端是否过去即可，如果最顶端没有过期 那么说明所有定时器都不会过期
 void handle_expired_event()
 {
-	pthread_mutex_lock(&qlock);
+	MutexLockGuard();
+	//pthread_mutex_lock(&qlock);
 	while (!myTimerQueue.empty())
 	{
 		mytimer *ptimer_now = myTimerQueue.top();
@@ -186,7 +196,7 @@ void handle_expired_event()
 			break;
 		}
 	}
-	pthread_mutex_unlock(&qlock);
+	//pthread_mutex_unlock(&qlock);
 }
 int main()
 {
