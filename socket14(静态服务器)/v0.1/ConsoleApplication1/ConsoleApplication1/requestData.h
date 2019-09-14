@@ -61,7 +61,7 @@ enum HeaderState
 struct mytimer;
 struct requestData;
 //请求数据
-struct requestData
+struct RequestData
 {
 private:
 	int againTimes;//监控 观察请求次数 请求次数的阈值AGAIN_MAX_TIMES为200
