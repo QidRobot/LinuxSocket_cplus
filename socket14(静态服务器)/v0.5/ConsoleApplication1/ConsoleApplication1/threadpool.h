@@ -63,7 +63,7 @@ private:
 	//线程池任务队列 任务队列中包含回调函数及参数
 	static std::vector<ThreadPoolTask> queue;
 	static int thread_count;//线程池线程数
-	static int queue_size;//队列大小
+	static int queue_size;//任务队列大小
 	static int head;//队列的头
 	//tail指向尾节点的下一节点
 	static int tail;//队列的尾部

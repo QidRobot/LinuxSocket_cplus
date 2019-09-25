@@ -3,13 +3,16 @@
 #include "epoll.h"
 #include <sys/epoll.h>
 #include <unistd.h>
+
 #include <sys/time.h>
 #include <unordered_map>
+
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <queue>
 #include <cstdlib>
+
 #include <sys/types.h>
 #include <sys/socket.h>
 //打开显示文件内容
@@ -51,7 +54,7 @@ void MimeType::init()
 	mime[".gif"] = "image/gif";
 	mime[".gz"] = "application/x-gzip";
 	mime[".ico"] = "application/x-ico";
-	mime[".jpg"] = "image/jpeg";
+	mime[".jpg"] = "image/jpeg;";
 	mime[".png"] = "image/png";
 	mime[".txt"] = "text/plain";
 	mime[".mp3"] = "audio/mp3";
@@ -95,12 +98,12 @@ std::string MimeType::getMime(const std::string &suffix)
 
 //初始化请求数据
 RequestData::RequestData():
-	now_read_pos(0), state(STATE_PARSE_URI), h_state(h_start), keep_alive(false), againTimes(0)
+	now_read_pos(0), state(STATE_PARSE_URI), h_state(h_start), keep_alive(false), isAbleRead(true), isAbleWrite(false), events(0), error(false)
 {
 	cout << "RequestData()" << endl;
 }
 RequestData::RequestData(int _epollfd, int _fd, std::string _path):
-	now_read_pos(0), state(STATE_PARSE_URI), h_state(h_start), keep_alive(false), againTimes(0),
+	now_read_pos(0), state(STATE_PARSE_URI), h_state(h_start), keep_alive(false), isAbleRead(true), isAbleWrite(false), events(0), error(false),
 	path(_path), fd(_fd), epollfd(_epollfd)
 {
 	cout << "RequestData()" << endl;
@@ -129,6 +132,7 @@ void RequestData::linkTimer(std::shared_ptr<TimerNode> mtimer)
 		timer = mtimer;
 	}*/
 	//shared_ptr重载了bool 但是weak_ptr没有
+	//将 weak_ptr 指针指向 shared_ptr
 	timer = mtimer;
 }
 //得到文件描述符
@@ -143,15 +147,16 @@ void RequestData::setFd(int _fd)
 //将请求内容全部重置
 void RequestData::reset()
 {
-	againTimes = 0;
-	content.clear();
+	//againTimes = 0;
+	//content.clear();
+	inBuffer.clear();
 	file_name.clear();
 	path.clear();
 	now_read_pos = 0;
 	state = STATE_PARSE_URI;
 	h_state = h_start;
 	headers.clear();
-	keep_alive = false;
+	//keep_alive = false;
 	//从被观测的shared_ptr中获取一个可用的shared_ptr对象从而操作资源，如果expire() == true时，返回的是一个存储空指针的shared_ptr
 	if (timer.lock())//timer的类型是weak_ptr类型 是专门用来观测 
 	{
@@ -175,44 +180,25 @@ void RequestData::seperateTimer()
 	}
 }
 
-//处理请求
-void RequestData::handleRequest()
+void RequestData::handleRead()
 {
-	char buff[MAX_BUFF];
-	bool isError = false;
-	while (true)
+	do 
 	{
-		int read_num = readn(fd, buff, MAX_BUFF);
+		int read_num = readn(fd, inBuffer);
 		if (read_num < 0)
 		{
 			perror("1");
-			isError = true;
+			error = true;
+			handleError(fd, 400, "Bad Request");
 			break;
 		}
 		else if (read_num == 0)
 		{
 			//有请求出现但是读不到数据 可能是Request Aborted 或者来自网络的数据没有达到等原因
-			perror("read_num == 0");
-			if (errno == EAGAIN)
-			{
-				if (againTimes > AGAIN_MAX_TIMES)
-				{
-					isError = true;
-				}
-				else
-				{
-					++againTimes;
-				}
-			}
-			else if (errno != 0)
-			{
-				isError = true;
-			}
+			error = true;
 			break;
 		}
 		//表示当前已经读到的内容
-		string now_read(buff, buff + read_num);
-		content += now_read;
 		if (state == STATE_PARSE_URI)
 		{
 			int flag = this->parse_URL();
@@ -223,12 +209,19 @@ void RequestData::handleRequest()
 			else if (flag == PARSE_URI_ERROR)//const int PARSE_URI_ERROR = -2;
 			{
 				perror("2");
-				isError = true;
+				error = true;
+				handleError(fd, 400, "Bad Request");
 				break;
 			}
+			else
+			{
+				state = STATE_PARSE_HEADERS;
+			}
 		}
+
 		if (state == STATE_PARSE_HEADERS)
 		{
+			//解析请求头
 			int flag = this->parse_Headers();
 			if (flag == PARSE_URI_AGAIN)
 			{
@@ -237,14 +230,16 @@ void RequestData::handleRequest()
 			else if (flag == PARSE_HEADER_ERROR)
 			{
 				perror("3");
-				isError = true;
+				error = true;
+				handleError(fd, 400, "Bad Request");
 				break;
 			}
 			if (method == METHOD_POST)
 			{
+				//POST方法准备
 				state = STATE_RECV_BODY;
 			}
-			else 
+			else
 			{
 				state = STATE_ANALYSIS;
 			}
@@ -253,88 +248,126 @@ void RequestData::handleRequest()
 		{
 			int content_length = -1;
 			if (headers.find("Content-length") != headers.end())
-			{ 
+			{
 				//将字符串类型转换成Int类型 将整数型字符串转换成整数型数字
 				content_length = stoi(headers["Content-length"]);
 			}
 			else
 			{
-				isError = true;
+				error = true;
+				handleError(fd, 400, "Bad Request: lack of argument (Content-length)");
 				break;
 			}
-			if (content.size() < content_length)
+			if (inBuffer.size() < content_length)
 			{
-				continue;
+				break;
 			}
 			state = STATE_ANALYSIS;
 		}
 		if (state == STATE_ANALYSIS)
 		{
 			int flag = this->analysisRequest();
-			if (flag < 0)
-			{
-				isError = true;
-				break;
-			}
-			else if (flag == ANALYSIS_SUCCESS)
+			if (flag == ANALYSIS_SUCCESS)
 			{
 				state = STATE_FINISH;
 				break;
 			}
 			else
 			{
-				isError = true;
+				error = true;
 				break;
 			}
 		}
-	}
-	if (isError)
-	{
-		//delete this; 在拥有智能指针的情况下  不需要再使用delete来删除 资源
-		return;
-	}
-	//加入epoll继续
-	if (state == STATE_FINISH)
-	{
-		if (keep_alive)
-		{
-			//printf("ok\n");
-			this->reset();
-		}
-		else
-		{
-			//delete this;
-			return;
-		}
-	}
-	// 一定要先加时间信息，否则可能会出现刚加进去，下个in触发来了，然后分离失败后，
-	// 又加入队列，最后超时被删，然后正在线程中进行的任务出错，double free错误。
-	// 新增时间信息
-	//pthread_mutex_lock(&qlock);
-	/*使用智能指针替换 共享资源 不需要再重复的new对象*/
-	//shared_ptr<mytimer> mtimer(new mytimer(shared_from_this(), 500));
-	//mytimer *mtimer = new mytimer(this, 500);
-	//this->addTimer(mtimer);
-	//timer = mtimer;
-	//{
-		//LockGuard作用于该代码块 方便了代码的书写 且该锁实现的是RALL机制 能起到管理资源的作用 调用构造函数即初始化 资源 
-		//该类的析构函数 调用时即释放资源
-		//MutexLockGuard lock;
-		//myTimerQueue.push(mtimer);
-	//}
-	//myTimerQueue.push(mtimer);
-	//pthread_mutex_unlock(&qlock);
-	//v4.0将此处添加定时器的方式就行修改
-	Epoll::add_timer(shared_from_this(), 500);
+	} while (false);
 
-	__uint32_t _epo_event = EPOLLIN | EPOLLET | EPOLLONESHOT;
-	//int Epoll::epoll_mod(int fd, std::shared_ptr<requestData> request, __uint32_t events)
-	int ret = Epoll::epoll_mod(fd, shared_from_this(), _epo_event);
-	if (ret < 0)
+	if (!error)
 	{
-		//返回错误处理
-		//delete this;
-		return;
+		if (outBuffer.size() > 0)
+		{
+			events |= EPOLLOUT;
+		}
+		if (state == STATE_FINISH)
+		{
+			cout << "keep_alive=" << keep_alive << endl;
+			if (keep_alive)
+			{
+				this->reset();
+				events |= EPOLLIN;
+			}
+			else
+			{
+				return;
+			}
+		}
+		else 
+		{
+			events |= EPOLLIN;
+		}
+	}
+}
+
+//如果请求可写并且 error为false时 则对象可调用该方法
+void RequestData::handleWrite()
+{
+	if (!error)
+	{
+		if (writen(fd, outBuffer) < 0)
+		{
+			perror("written");
+			events = 0;
+			error = true;
+		}
+		else if (outBuffer.size() > 0)
+		{
+			events |= EPOLLOUT;
+		}
+	}
+}
+
+void RequestData::handleConn()
+{
+	if (!error)
+	{
+		if (events != 0)
+		{
+			//一定要先加时间信息，否则可能会出现刚加进去，下一个in触发来了，然后分离失败后，又加入队列，最后超时被删除，
+			//然后正在线程中进行的任务出错，double free错误
+			int timeout = 2000;
+			if (keep_alive)
+			{
+				//以毫秒计数，表示如果keep_live = true时，则表示超时时间设置为5分钟
+				timeout = 5 * 60 * 1000;
+			}
+			isAbleRead = false;
+			isAbleWrite = false;
+			Epoll::add_timer(shared_from_this(), timeout);
+			if ((events & EPOLLIN) && (events & EPOLLOUT))
+			{
+				events = __uint32_t(0);
+				events |= EPOLLOUT;
+			}
+			events |= (EPOLLET | EPOLLONESHOT);
+			__uint32_t _events = events;
+			events = 0;
+			if (Epoll::epoll_mod(fd, shared_from_this(), _events) < 0)
+			{
+				printf("Epoll::epoll_mod error\n");
+			}		 
+		}
+		else if (keep_alive)
+		{
+			events |= (EPOLLIN | EPOLLOUT | EPOLLONESHOT);
+			int timeout = 5 * 60 * 1000;
+			isAbleRead = false;
+			isAbleWrite = false;
+			Epoll::add_timer(shared_from_this(), timeout);
+			__uint32_t _events = events;
+			events = 0;
+			if (Epoll::epoll_mod(fd, shared_from_this(), _events) < 0)
+			{
+				printf("Epoll::epoll_mod error\n");
+			}
+		}
 	}
 }
 
@@ -401,7 +434,7 @@ void encode_str(char *to, int tosize, const char* from)
 //解析地址
 int RequestData::parse_URL()
 {
-	string &str = content;
+	string &str = inBuffer;
 	//读到完整的请求行再开始解析请求
 	int pos = str.find('\r', now_read_pos);//从当前已经读到的内容中找到第一个'\r'
 	if (pos < 0)
@@ -514,7 +547,6 @@ int RequestData::parse_URL()
 			}
 		}
 	}
-	state = STATE_PARSE_HEADERS;
 	return PARSE_URI_SUCCESS;
 }
 
@@ -529,7 +561,7 @@ Cookie: lsd=XW[...]; c_user=21[...]; x-referer=[...]
 */
 int RequestData::parse_Headers()
 {
-	string &str = content;
+	string &str = inBuffer;
 	int key_start = -1, key_end = -1, value_start = -1, value_end = -1;
 	int now_read_line_begin = 0;
 	bool notFinish = true;
@@ -659,54 +691,48 @@ int RequestData::parse_Headers()
 	str = str.substr(now_read_line_begin);
 	return PARSE_HEADER_AGAIN;
 }
+
 //分析请求数据
 int RequestData::analysisRequest()
 {
 	if (method == METHOD_POST)
 	{
-		//get content
-		char header[MAX_BUFF];
-		sprintf(header, "HTTP/1.1 %d %s\r\n", 200, "OK");
+		//get inBuffer
+		string header;
+		header += string("HTTP/1.1 200 OK\r\n");
+
 		/*
 		一般情况下使用的将都是长连接方式 http1.1开始就是默认长连接方式
 		如果请求头为长连接方式时，那么我们将设置返回的请求头为长连接方式，否则将会使用短连接的方式
 		*/
+
 		if (headers.find("Connection") != headers.end() && headers["Connection"] == "keep-alive")
 		{
 			keep_alive = true;
-			sprintf(header, "%sConnection: keep-alive\r\n", header);
-			sprintf(header, "%sKeep-Alive: timeout=%d\r\n", header, EPOLL_WAIT_TIME);
+			header += string("Connection: keep-alive\r\n") + "Keep-Alive: timeout=" + to_string(5 * 6 * 1000) + "\r\n";
 		}
-		//cout << "content=" << content << endl;
-		// test char*
-		char *send_content = "I have receiced this.";
-		//%zu在库中定义为size_t类型	即为unsign int类型
-		sprintf(header, "%sContent-length: %zu\r\n", header, strlen(send_content));
-		//sprintf(header, "%sContent-length: %zu\r\n", header, -1);
-		sprintf(header, "%s\r\n", header);
-		size_t send_len = (size_t)writen(fd, header, strlen(header));
-		if (send_len != strlen(header))
-		{
-			perror("Send header failed");
-			return ANALYSIS_ERROR;
-		}
-
-		send_len = (size_t)writen(fd, send_content, strlen(send_content));
-		if (send_len != strlen(send_content))
-		{
-			perror("Send content failed");
-			return ANALYSIS_ERROR;
-		}
-		cout << "content size ==" << content.size() << endl;
-		vector<char> data(content.begin(), content.end());
-		Mat test = imdecode(data, CV_LOAD_IMAGE_ANYDEPTH | CV_LOAD_IMAGE_ANYCOLOR);
-		imwrite("receive.bmp", test);
+		int length = stoi(headers["Content-length"]);
+		vector<char> data(inBuffer.begin(), inBuffer.begin() + length);
+		cout << " data.size()=" << data.size() << endl;
+		Mat src = imdecode(data, CV_LOAD_IMAGE_ANYDEPTH | CV_LOAD_IMAGE_ANYCOLOR);
+		imwrite("receive.bmp", src);
+		cout << "1" << endl;
+		Mat res = stitch(src);
+		cout << "2" << endl;
+		vector<uchar> data_encode;
+		imencode(".png", res, data_encode);
+		cout << "3" << endl;
+		header += string("Content-length: ") + to_string(data_encode.size()) + "\r\n\r\n";
+		cout << "4" << endl;
+		outBuffer += header + string(data_encode.begin(), data_encode.end());
+		cout << "5" << endl;
+		inBuffer = inBuffer.substr(length);
 		return ANALYSIS_SUCCESS;
 	}
 	else if (method == METHOD_GET)
 	{
-		char header[MAX_BUFF];
-		sprintf(header, "HTTP/1.1 %d %s\r\n", 200, "OK");
+		string header;
+		header += "HTTP/1.1 200 OK\r\n";
 		/*
 		一般情况下使用的将都是长连接方式 http1.1开始就是默认长连接方式
 		如果请求头为长连接方式时，那么我们将设置返回的请求头为长连接方式，否则将会使用短连接的方式
@@ -714,17 +740,20 @@ int RequestData::analysisRequest()
 		if (headers.find("Connection") != headers.end() && headers["Connection"] == "keep-alive")
 		{
 			keep_alive = true;
-			sprintf(header, "%sConnection: keep-alive\r\n", header);
-			//在HTTP 1.1版本后，默认都开启Keep-Alive模式，只有加入加入 Connection: close才关闭连接，当然也可以设置Keep-Alive模式的属性，
-			//例如 Keep-Alive: timeout=5, max=100，表示这个TCP通道可以保持5秒，max=100，表示这个长连接最多接收100次请求就断开。
-			sprintf(header, "%sKeep-Alive: timeout=%d\r\n", header, EPOLL_WAIT_TIME);
+			header += string("Connection: keep-alive\r\n") + "Keep-Alive: timeout=" + to_string(5 * 6 * 1000) + "\r\n";
 		}
 		int dot_pos = file_name.find('.');
-		const char* filetype;
+		string filetype;
 		if (dot_pos < 0)
-			filetype = MimeType::getMime("default").c_str();
+		{
+			filetype = MimeType::getMime("default");
+			//cout << "filetype = " << filetype << endl;
+		}
 		else
-			filetype = MimeType::getMime(file_name.substr(dot_pos)).c_str();
+		{
+			filetype = MimeType::getMime(file_name.substr(dot_pos));
+			//cout << "filetype = " << filetype << endl;
+		}
 		struct stat sbuf;
 		/*
 			函数说明:    通过文件名filename获取文件信息，并保存在buf所指的结构体stat中
@@ -746,27 +775,35 @@ int RequestData::analysisRequest()
 		};*/
 		if (stat(file_name.c_str(), &sbuf) < 0)
 		{
+			header.clear();
 			handleError(fd, 404, "Not Found!");
 			return ANALYSIS_ERROR;
 		}
-		sprintf(header, "%sContent-type: %s\r\n", header, filetype);
-		// 通过Content-length返回文件大小
-		sprintf(header, "%sContent-length: %ld\r\n", header, sbuf.st_size);
-		//sprintf(header, "%sContent-length: %ld\r\n", header, -1);
-		/*可以采用传-1的方式对Content-length的值进行设置*/
-		sprintf(header, "%s\r\n", header);
-		size_t send_len = (size_t)writen(fd, header, strlen(header));
+		
+		/*size_t send_len = (size_t)writen(fd, header, strlen(header));
 		if (send_len != strlen(header))
 		{
 			perror("Send header failed");
 			return ANALYSIS_ERROR;
-		}
+		}*/
+		
 		//判断请求内容是否为目录
+		//2019年9月14日22:36:27
 		if (S_ISDIR(sbuf.st_mode))
 		{
+			header += "Content-type: " + filetype + "\r\n";
+			header += "Content-length: " + to_string(-1) + "\r\n";
+			//header += "Content-length: " + to_string(sbuf.st_size) + "\r\n";
+			header += "\r\n";
+			outBuffer += header;
+			/*先发头文件 这里我们先没有加入发送错误判断*/
+			//writen(fd, header);
+			//先将outBuffer清空
+			//outBuffer = "";
+
 			//判断如果是目录，需要将目录中的信息拼接成一个网页发给客户端
 			/*头文件已经发送--接下来---拼接一个html压面发给客户端*/
-			char buf[4094] = { 0 };
+			char buf[4096] = { 0 };
 			int i, ret;
 			sprintf(buf, "<html><head><title>目录名：%s</title></head>", file_name.c_str());
 			sprintf(buf + strlen(buf), "<body><h1>当前目录：%s</h1><table>", file_name.c_str());
@@ -788,7 +825,6 @@ int RequestData::analysisRequest()
 				//编码生成  %E5 %A7 将中文字字符进行编码 但是在进行路径文件分析时需要解码 编码和解码相对应
 				//void encode_str(char *to, int tosize, const char* from)
 				encode_str(enstr, sizeof(enstr), name);//将地址写入到内存 并且进行编码
-				
 				/*
 				memcpy(enstr, name, strlen(name));
 				//a使用字串形式打印
@@ -803,40 +839,52 @@ int RequestData::analysisRequest()
 				{
 					sprintf(buf + strlen(buf), "<tr><td><a href=\"%s/\">%s/</a></td><td>%ld</td></tr>", enstr, name, (long)st.st_size);
 				}
-				ret = send(fd, buf, strlen(buf), 0);
-				if (ret == -1)
-				{
-					if (errno == EAGAIN)
-					{
-						perror("send error");
-						continue;
-					}
-					else if (errno == EINTR)
-					{
-						perror("send error");
-						continue;
-					}
-					else
-					{
-						perror("send error");
-						//return ANALYSIS_ERROR;
-						exit(1);
-					}
-				}
+				//ret = send(fd, buf, strlen(buf), 0);
+				//if (ret == -1)
+				//{
+				//	if (errno == EAGAIN)
+				//	{
+				//		perror("send error");
+				//		continue;
+				//	}
+				//	else if (errno == EINTR)
+				//	{
+				//		perror("send error");
+				//		continue;
+				//	}
+				//	else
+				//	{
+				//		perror("send error");
+				//		//return ANALYSIS_ERROR;
+				//		exit(1);
+				//	}
+				//}
+				//将outbuffer和buf相关联
+				outBuffer += buf;
 				//清空buf缓冲区
 				memset(buf, 0, sizeof(buf));
 			}
 			sprintf(buf + strlen(buf), "</table></body></html>");
-			send(fd, buf, strlen(buf), 0);
-			printf("dir message send OK!!!!\n");
+			//send(fd, buf, strlen(buf), 0);
+			outBuffer += buf;
+			memset(buf, 0, sizeof(buf));
+			//printf("dir message send OK!!!!\n");
 			return ANALYSIS_SUCCESS;
+
 		}else {
+			header += "Content-type: " + filetype + "\r\n";
+			//header += "Content-length: " + to_string(-1) + "\r\n";
+			header += "Content-length: " + to_string(sbuf.st_size) + "\r\n";
+			header += "\r\n";
+			//outBuffer += header;
 			//普通文件的处理方式 直接将文件返回给客户端
 			int src_fd = open(file_name.c_str(), O_RDONLY, 0);
 			char *src_addr = static_cast<char*>(mmap(NULL, sbuf.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0));
 			close(src_fd);
+			//先发头再发头文件
+			writen(fd, header);
 			// 发送文件并校验完整性
-			send_len = writen(fd, src_addr, sbuf.st_size);
+			int send_len = writen(fd, src_addr, sbuf.st_size);
 			if (send_len != sbuf.st_size)
 			{
 				perror("Send file failed");
@@ -844,6 +892,7 @@ int RequestData::analysisRequest()
 			}
 			/*函数说明 munmap()用来取消参数start所指的映射内存起始地址，参数length则是欲取消的内存大小。
 			当进程结束或利用exec相关函数来执行其他程序时，映射内存会自动解除，但关闭对应的文件描述符时不会解除映射。*/
+			//outBuffer += src_addr;
 			munmap(src_addr, sbuf.st_size);
 			return ANALYSIS_SUCCESS;
 		}
@@ -876,4 +925,25 @@ void RequestData::handleError(int fd, int err_num, std::string short_msg)
 	writen(fd, send_buff, strlen(send_buff));//先发请求头
 	sprintf(send_buff, "%s", body_buff.c_str());
 	writen(fd, send_buff, strlen(send_buff));//再发出body信息数据
+}
+void RequestData::disableReadAndWrite()
+{
+	isAbleRead = false;
+	isAbleWrite = false;
+}
+void RequestData::enableRead()
+{
+	isAbleRead = true;
+}
+void RequestData::enableWrite()
+{
+	isAbleWrite = true;
+}
+bool RequestData::canRead()
+{
+	return isAbleRead;
+}
+bool RequestData::canWrite()
+{
+	return isAbleWrite;
 }

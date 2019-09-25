@@ -154,6 +154,7 @@
     <ClCompile Include="util.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="base\condition.hpp" />
     <ClInclude Include="base\mutexLock.hpp" />
     <ClInclude Include="base\nocopyable.hpp" />
     <ClInclude Include="epoll.h" />

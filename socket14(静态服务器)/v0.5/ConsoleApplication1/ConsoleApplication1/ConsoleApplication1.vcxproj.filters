@@ -56,5 +56,8 @@
     <ClInclude Include="base\nocopyable.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="base\condition.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

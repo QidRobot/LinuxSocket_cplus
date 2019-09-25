@@ -21,7 +21,7 @@ using namespace std;
 
 const int MAXEVENTS = 5000;
 const int LISTENQ = 1024;
-//线程池中线程数量设置为4
+//线程池中线程数量设置为4 本机为双核6线程
 const int THREADPOOL_THREAD_NUM = 4;
 //线程池中的任务队列大小
 const int QUEUE_SIZE = 65535;
@@ -133,7 +133,7 @@ int main()
 {
 	/*加入#ifndef是为了在被包含时 能够避免二次调用库*/
 	#ifndef _PTHREADS
-	printf("_PTHREADS is not defined !\n");
+		printf("_PTHREADS is not defined !\n");
 	#endif
 	//根据PATH指定的工作路径 改变进程的执行路径
 	int ret = chdir(PATH);
@@ -170,9 +170,9 @@ int main()
 		perror("set socket non block failed");
 		return 1;
 	}
+
 	shared_ptr<RequestData> request(new RequestData());
 	//requestData *req = new requestData(); 用智能指针统一管理资源
-
 	request->setFd(listen_fd);
 	//req->setFd(listen_fd);//设定套接字
 	//将监听事件加入到epoll树 同时加入req请求

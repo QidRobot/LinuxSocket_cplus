@@ -5,6 +5,15 @@
 #include <string>
 #include <unordered_map> 
 #include <memory>
+#include <sys/epoll.h>
+
+#include <opencv/cv.h>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/opencv.hpp>
+
+using namespace cv;
+
 /*引用头文件(C++11)：#include <unordered_map> -- hashmap表
 定义：unordered_map<int,int>、unordered_map<string, double>…
 插入：例如将(“ABC” -> 5.45) 插入unordered_map<string, double> hash中，hash[“ABC”]=5.45*/
@@ -63,28 +72,33 @@ private:
 enum HeaderState
 {
 	h_start = 0,
-	h_key,
-	h_colon,
-	h_spaces_after_colon,
-	h_value,
-	h_CR,
-	h_LF,
-	h_end_CR,
-	h_end_LF
+	h_key,//1
+	h_colon,//2
+	h_spaces_after_colon,//3
+	h_value,//4
+	h_CR,//5
+	h_LF,//6
+	h_end_CR,//7
+	h_end_LF//8
 };
 
-struct TimerNode;
-
+class TimerNode;
 //请求数据
 //enable_shared_from_this 这是一个以基派生类为模板类型实参的基类模板 继承它 this指针就变成了shared_ptr类型
 class RequestData : public std::enable_shared_from_this<RequestData>
 {
 private:
-	int againTimes;//监控 观察请求次数 请求次数的阈值AGAIN_MAX_TIMES为200
+	//int againTimes;//监控 观察请求次数 请求次数的阈值AGAIN_MAX_TIMES为200
 	std::string path;
 	int fd;
 	int epollfd;
-	std::string content;//content的内容用完就清理
+
+	std::string inBuffer;
+	std::string outBuffer;
+	__uint32_t events;
+	bool error;
+
+	//std::string content;//content的内容用完就清理
 	int method;
 	int HTTPversion;//http协议版本
 	std::string file_name;
@@ -98,6 +112,9 @@ private:
 	//mytimer *timer;
 	std::weak_ptr<TimerNode> timer;
 
+	bool isAbleRead;
+	bool isAbleWrite;
+
 private:
 	//解析地址
 	int parse_URL();
@@ -105,6 +122,10 @@ private:
 	int parse_Headers();
 	//分析请求数据
 	int analysisRequest();
+	Mat stitch(Mat &src)
+	{
+		return src;
+	}
 
 public:
 	RequestData();
@@ -116,9 +137,23 @@ public:
 	void reset();
 	void seperateTimer();
 	int getFd();
+
 	void setFd(int _fd);
-	void handleRequest();
+	//void handleRequest();
+	void handleRead();
+	void handleWrite();
 	void handleError(int fd, int err_num, std::string short_msg);
+	void handleConn();
+
+	void disableReadAndWrite();
+
+	void enableRead();
+
+	void enableWrite();
+
+	bool canRead();
+
+	bool canWrite();
 };
 
 #endif

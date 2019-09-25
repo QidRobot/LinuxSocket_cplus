@@ -13,8 +13,11 @@ int TIMER_TIME_OUT = 500;
 
 //extern std::priority_queue<std::shared_ptr<mytimer>, std::deque<std::shared_ptr<mytimer>>, timerCmp> myTimerQueue;
 
+/*务必记住静态变量必须进行初始化*/
 epoll_event *Epoll::events;
-std::unordered_map<int, std::shared_ptr<RequestData>> Epoll::fd2req;
+//MAXFDS = 1000表示最多放多少个请求
+Epoll::SP_ReqData Epoll::fd2req[MAXFDS];
+//std::unordered_map<int, std::shared_ptr<RequestData>> Epoll::fd2req;
 int Epoll::epoll_fd = 0;
 const std::string Epoll::PATH = "/home/jacob/dir";
 
@@ -44,13 +47,13 @@ int Epoll::epoll_add(int fd, SP_ReqData request, __uint32_t events)
 	struct epoll_event event;
 	event.data.fd = fd;
 	event.events = events;
+	fd2req[fd] = request;
 	//int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
 	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event) < 0)
 	{
 		perror("epoll_add error(epoll)");
 		return -1;
 	}
-	fd2req[fd] = request;
 	return 0;
 }
 
@@ -60,12 +63,14 @@ int Epoll::epoll_mod(int fd, SP_ReqData request, __uint32_t events)
 	struct epoll_event event;
 	event.data.fd = fd;
 	event.events = events;
+	fd2req[fd] = request;
 	if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &event) < 0)
 	{
 		perror("epoll_mod error");
+		/*将shared_ptr指针类型的request 进行清空 由于这次的修改事件没有成功*/
+		fd2req[fd].reset();
 		return -1;
 	}
-	fd2req[fd] = request;
 	return 0;
 }
 
@@ -81,11 +86,12 @@ int Epoll::epoll_del(int fd, __uint32_t events)
 		return -1;
 	}
 	//c++11中特有的 auto类型
-	auto fd_ite = fd2req.find(fd);
+	/*auto fd_ite = fd2req.find(fd);
 	if (fd_ite != fd2req.end())
 	{
 		fd2req.erase(fd_ite);
-	}
+	}*/
+	fd2req[fd].reset();
 	return 0;
 }
 
@@ -142,6 +148,12 @@ void Epoll::acceptConnection(int listen_fd, int epoll_fd, const std::string path
 		getsockopt(accept_fd, SOL_SOCKET,  SO_KEEPALIVE, &optval, &len_optval);
 		cout << "optval ==" << optval << endl;
 		*/
+		//限制服务器的最大并发连接数
+		if (accept_fd >= MAXFDS)
+		{
+			close(accept_fd);
+			continue;
+		}
 		//设置非阻塞模式 这个方法是来自 util.h中的
 		int ret = setSockNonBlocking(accept_fd);
 		if (ret < 0)
@@ -188,18 +200,27 @@ std::vector<std::shared_ptr<RequestData>> Epoll::getEventsRequest(int listen_fd,
 		}
 		else if (fd < 3)
 		{
+			printf("fd < 3\n");
 			break;
 		}
 		else
 		{
 			//排除错误事件
-			if ((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP) || (!(events[i].events & EPOLLIN)))
+			if ((events[i].events & EPOLLERR) || (events[i].events & EPOLLHUP))
 			{
-				auto fd_ite = fd2req.find(fd);
+				printf("error event\n");
+				if (fd2req[fd])
+				{
+					//将定时器和事件请求进行分离
+					fd2req[fd]->seperateTimer();
+				}
+				//清空该事件请求
+				fd2req[fd].reset();
+				/*auto fd_ite = fd2req.find(fd);
 				if (fd_ite != fd2req.end())
 				{
 					fd2req.erase(fd_ite);
-				}
+				}*/
 				//printf("error event\n");
 				//delete request;
 				continue;
@@ -207,14 +228,38 @@ std::vector<std::shared_ptr<RequestData>> Epoll::getEventsRequest(int listen_fd,
 
 			//将请求任务加入到线程池任务队列中
 			//加入线程池之前将Timer和request分离 简单说就是删除时间
-			SP_ReqData cur_req(fd2req[fd]);
-			cur_req->seperateTimer();
+			SP_ReqData cur_req = fd2req[fd];
+			//SP_ReqData cur_req(fd2req[fd]);
+
+			//如果对应fd中有请求的话
+			if (cur_req)
+			{
+				//判断事件是否可读
+				if ((events[i].events & EPOLLIN) || (events[i].events & EPOLLPRI))
+				{
+					cur_req->enableRead();
+				}
+				//判断事件是否可写
+				else 
+				{
+					cur_req->enableWrite();
+				}
+				cur_req->seperateTimer();
+				req_data.push_back(cur_req);
+				fd2req[fd].reset();
+			}
+			else
+			{
+				cout << "SP cur_req is invalid" << endl;
+			}
+			/*cur_req->seperateTimer();
 			req_data.push_back(cur_req);
 			auto fd_ite = fd2req.find(fd);
 			if (fd_ite != fd2req.end())
 			{
 				fd2req.erase(fd_ite);
-			}
+			}*/
+
 			//int threadpool_add(threadpool_t *pool, void(*function)(void *), void *argument, int flags)
 			/*这个回调函数即为处理请求数据的回调函数  myHandler -》 handleRequest*/
 			//int rc = threadpool_add(tp, myHandler, events[i].data.ptr, 0);
@@ -222,8 +267,7 @@ std::vector<std::shared_ptr<RequestData>> Epoll::getEventsRequest(int listen_fd,
 	}
 	return req_data;
 }
-
-void Epoll::add_timer(shared_ptr<RequestData> request_data, int timeout)
+void Epoll::add_timer(SP_ReqData request_data, int timeout)
 {
 	timer_manager.addTimer(request_data, timeout);
 }

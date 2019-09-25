@@ -15,9 +15,12 @@ public:
 	//使用SP_ReqData 替换 std::shared_ptr<RequestData>
 	typedef std::shared_ptr<RequestData> SP_ReqData;
 private:
+	static const int MAXFDS = 1000;
 	static epoll_event *events;
-	//将智能指针加入类型的变量 加入到hash表中
-	static std::unordered_map<int, SP_ReqData> fd2req;
+	//将智能指针加入类型的变量 加入到hash表中 该hash表中的存储是 fd(套接字) --> 对应请求
+	//static std::unordered_map<int, SP_ReqData> fd2req;
+	/*用数组的方式来存储请求 shared_ptr<RequestData>类型的请求*/
+	static SP_ReqData fd2req[MAXFDS];
 	static int epoll_fd;
 	static const std::string PATH;
 
@@ -33,7 +36,7 @@ public:
 	static void acceptConnection(int listen_fd, int epoll_fd, const std::string path);
 	//智能指针vector集合 智能指针的对象是requestData
 	static std::vector<SP_ReqData> getEventsRequest(int listen_fd, int events_num, const std::string path);
-	
+
 	static void add_timer(SP_ReqData request_data, int timeout);
 };
 #endif

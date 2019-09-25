@@ -68,7 +68,16 @@ void myHandler(std::shared_ptr<void> req)
 {
 	//使用智能指针时 涉及到向下转型 可以使用static_pointer_cast 和 dynamic_pointer_cast 但是dynamic_pointer_cast相对来说不是很安全
 	std::shared_ptr<RequestData> request = std::static_pointer_cast<RequestData>(req);
-	request->handleRequest();
+	//2019年9月15日09:18:33
+	if (request->canWrite())
+	{
+		request->handleWrite();
+	}
+	else if (request->canRead()) 
+	{
+		request->handleRead();
+	}
+	request->handleConn();
 }
 
 //向线程池中的任务队列中添加任务 并将队列的tail指针重新指向尾部 将队列中现有未处理的任务数count + 1

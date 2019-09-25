@@ -12,7 +12,7 @@ using namespace std;
 //mytimer::mytimer(requestData *_request_data, int timeout):deleted(false), request_data(_request_data)
 TimerNode::TimerNode(SP_ReqData _request_data, int timeout) : deleted(false), request_data(_request_data)
 {
-	cout << "TimeNode()" << endl;
+	//cout << "TimeNode()" << endl;
 	/*struct timeval
 	{
 	__time_t tv_sec;        //Seconds. 秒
@@ -27,7 +27,7 @@ TimerNode::TimerNode(SP_ReqData _request_data, int timeout) : deleted(false), re
 
 TimerNode::~TimerNode()
 {
-	cout << "~TimeNode()" << endl;//析构函数
+	//cout << "~TimeNode()" << endl;//析构函数
 	if (request_data)
 	{
 		//int Epoll::epoll_del(int fd, __uint32_t events)
@@ -38,6 +38,7 @@ TimerNode::~TimerNode()
 		//request_data = NULL;//避免野指针
 	}
 }
+
 //更新定时器的过期时间
 void TimerNode::update(int timeout)
 {
@@ -64,20 +65,24 @@ bool TimerNode::isvalid()
 	}
 
 }
+
 void TimerNode::clearReq()
 {
 	//request_data = NULL;
 	request_data.reset();
 	this->setDeleted();
 }
+
 void TimerNode::setDeleted()
 {
 	deleted = true;
 }
+
 bool TimerNode::isDeleted() const
 {
 	return deleted;
 }
+
 size_t TimerNode::getExpTime() const
 {
 	return expired_time;
@@ -88,6 +93,7 @@ TimerManager::TimerManager()
 {
 
 }
+
 TimerManager::~TimerManager()
 {
 

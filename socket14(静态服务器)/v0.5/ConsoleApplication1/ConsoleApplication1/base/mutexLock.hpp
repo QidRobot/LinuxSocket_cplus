@@ -27,8 +27,17 @@ public:
 	{
 		pthread_mutex_unlock(&mutex);
 	}
+	pthread_mutex_t *get()
+	{
+		return &mutex;
+	}
 private:
 	pthread_mutex_t mutex;
+
+//友元类不受访问权限影响
+private:
+	//申明友元类 表示两个类之间为关系紧密 类的私有成员可以访问 但是这种友元关系不能进行传递 这是c++为程序员提供的一种访问私有成员的方法
+	friend class Condition;
 };
 
 /*详细来看 RALL锁机制 其实可以理解为我们在调用函数时 其实是入栈 在函数中调用锁对象 锁对象也是在栈中
